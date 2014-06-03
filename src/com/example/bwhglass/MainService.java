@@ -1,4 +1,4 @@
-package com.example.helloglass;
+package com.example.bwhglass;
 
 import com.google.android.glass.timeline.LiveCard;
 import com.google.android.glass.timeline.LiveCard.PublishMode;
