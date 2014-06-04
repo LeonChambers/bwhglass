@@ -9,14 +9,12 @@ import android.os.IBinder;
 import android.os.Handler;
 import android.view.Menu;
 import android.view.MenuItem;
-import android.util.Log;
 
 import java.lang.Runnable;
 
 public class MainMenuActivity extends Activity {
 
     private final Handler mHandler = new Handler();
-    private final static String TAG = "menu_activity";
 
     private boolean mAttachedToWindow;
     private boolean mOptionsMenuOpen;
@@ -53,7 +51,6 @@ public class MainMenuActivity extends Activity {
 
     @Override
     public void openOptionsMenu() {
-    	Log.i(TAG,"Trying to open Options Menu");
         if (!mOptionsMenuOpen && mAttachedToWindow) {
             super.openOptionsMenu();
         }
@@ -61,14 +58,12 @@ public class MainMenuActivity extends Activity {
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-    	Log.i(TAG,"Trying to create options menu");
         getMenuInflater().inflate(R.menu.main, menu);
         return true;
     }
 
     @Override
     public boolean onOptionsItemSelected(MenuItem item) {
-    	Log.i(TAG,"Selected Options item");
         switch (item.getItemId()) {
             case R.id.stop:
                 mHandler.post(new Runnable() {

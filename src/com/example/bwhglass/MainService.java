@@ -34,6 +34,7 @@ public class MainService extends Service {
             mLiveCardView.setTextViewText(R.id.number,String.valueOf(update_index));
             // Set up the LiveCard's action
             Intent menuIntent = new Intent(this, MainMenuActivity.class);
+            menuIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
             mLiveCard.setAction(PendingIntent.getActivity(this, 0, menuIntent, 0));
             // Publish the live card
             mLiveCard.attach(this);
@@ -64,7 +65,7 @@ public class MainService extends Service {
     private class UpdateLiveCardRunnable implements Runnable {
     	private boolean mIsStopped = false;
     	public void run() {
-    		if (!isStopped()) {
+    		if (!isStopped() && mLiveCard.isPublished()) {
     			update_index++;
     			// Update the RemoveViews
     			mLiveCardView.setTextViewText(R.id.number,String.valueOf(update_index));
@@ -81,7 +82,6 @@ public class MainService extends Service {
     		this.mIsStopped = isStopped;
     	}
     }
-    
 	@Override
 	public IBinder onBind(Intent intent) {
 		return null;

@@ -18,18 +18,21 @@ public final class R {
         public static final int ic_stop=0x7f020001;
     }
     public static final class id {
-        public static final int number=0x7f080000;
-        public static final int stop=0x7f080001;
+        public static final int number=0x7f090000;
+        public static final int stop=0x7f090001;
     }
     public static final class layout {
         public static final int hello_glass=0x7f030000;
     }
     public static final class menu {
-        public static final int main=0x7f070000;
+        public static final int main=0x7f080000;
     }
     public static final class string {
         public static final int app_name=0x7f060000;
         public static final int stop=0x7f060001;
+    }
+    public static final class style {
+        public static final int MenuTheme=0x7f070000;
     }
     public static final class xml {
         public static final int main_show=0x7f040000;
