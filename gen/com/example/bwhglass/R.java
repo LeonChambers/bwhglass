@@ -18,11 +18,13 @@ public final class R {
         public static final int ic_stop=0x7f020001;
     }
     public static final class id {
-        public static final int number=0x7f090000;
-        public static final int stop=0x7f090001;
+        public static final int graph=0x7f090000;
+        public static final int sensor_name=0x7f090001;
+        public static final int stop=0x7f090003;
+        public static final int value=0x7f090002;
     }
     public static final class layout {
-        public static final int hello_glass=0x7f030000;
+        public static final int live_card=0x7f030000;
     }
     public static final class menu {
         public static final int main=0x7f080000;
