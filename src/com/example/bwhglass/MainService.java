@@ -10,20 +10,12 @@ import java.util.Map;
 import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
 
-import org.achartengine.ChartFactory;
-import org.achartengine.GraphicalView;
-import org.achartengine.chart.PointStyle;
-import org.achartengine.model.XYMultipleSeriesDataset;
-import org.achartengine.model.XYSeries;
-import org.achartengine.renderer.XYMultipleSeriesRenderer;
-import org.achartengine.renderer.XYSeriesRenderer;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
 import android.app.Service;
 import android.app.PendingIntent;
-import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -208,8 +200,6 @@ public class MainService extends Service {
     			paint.setTextSize(35);
     			canvas.drawText(String.valueOf(sensorValue), textX, 2*textY, paint);
     			// Draw the graph
-    			Bitmap graph = mChartView.toBitmap();
-    			canvas.drawBitmap(graph, null, canvas.getClipBounds(), null);
     			mSurfaceHolder.unlockCanvasAndPost(canvas);
     		}
     	}
