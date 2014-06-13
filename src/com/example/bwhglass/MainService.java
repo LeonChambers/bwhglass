@@ -1,21 +1,44 @@
 package com.example.bwhglass;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.HashMap;
+import java.util.Map;
 
+import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
+
+import org.achartengine.ChartFactory;
+import org.achartengine.GraphicalView;
+import org.achartengine.chart.PointStyle;
+import org.achartengine.model.XYMultipleSeriesDataset;
+import org.achartengine.model.XYSeries;
+import org.achartengine.renderer.XYMultipleSeriesRenderer;
+import org.achartengine.renderer.XYSeriesRenderer;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.json.JSONTokener;
 
 import android.app.Service;
 import android.app.PendingIntent;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Paint.Align;
+import android.graphics.Paint.Style;
 import android.os.AsyncTask;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.util.Log;
-import android.widget.RemoteViews;
+import android.view.SurfaceHolder;
 
 public class MainService extends Service {
 
@@ -24,22 +47,24 @@ public class MainService extends Service {
 	
 	private String[] mSensors;
     private LiveCard[] mLiveCards;
-    private RemoteViews[] mLiveCardViews;
-    private String[] mSensorValues;
-    private Bitmap[] mSensorGraphs;
+    private Map<String,Double> mCurrentSensorValues = new HashMap<String,Double>();
+    // private List<DataPoint>[] mDataPointsToGraph;
+    
+    private LiveCard mImageCard;
+    private static final String IMAGE_CARD_TAG = "microscope_image";
     
     private HandlerThread mHandlerThread;
     private Handler mHandler;
-    private final UpdateLiveCardsRunnable mUpdateLiveCardsRunnable = new UpdateLiveCardsRunnable();
     private final UpdateSensorValuesRunnable mUpdateSensorValuesRunnable = new UpdateSensorValuesRunnable();
-    private final UpdateSensorGraphsRunnable mUpdateSensorGraphsRunnable = new UpdateSensorGraphsRunnable();
+    
     private static final long DATA_UPDATE_DELAY_MILLIS = 500;
-    private static final long IMAGE_UPDATE_DELAY_MILLIS = 10000;
-    private static final long SCREEN_UPDATE_DELAY_MILLIS = 1000;
+    private static final long FRAME_TIME_MILLIS = 100;
+    private static final long IMAGE_FRAME_TIME_MILLIS = 1000;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
     	if (!isRunning) {
+    		isRunning = true;
     		mHandlerThread = new HandlerThread("myHandlerThread");
     		mHandlerThread.start();
     		mHandler = new Handler(mHandlerThread.getLooper());
@@ -47,91 +72,261 @@ public class MainService extends Service {
     		task.execute(this);
     	}
     	else {
-    		mLiveCards[0].navigate();
+    		if (mLiveCards.length > 0) {
+    			mLiveCards[0].navigate();
+    		}
     	}
-        return START_STICKY;
+    	return START_STICKY;
     }
     
     // Live cards must be loaded asynchronously so that we are not going web queries in the main thread
-    private class MakeLiveCardsTask extends AsyncTask<MainService,Integer,Boolean> {
-    	protected Boolean doInBackground(MainService... service) {
-    		// Initialize everything
+    private class MakeLiveCardsTask extends AsyncTask<MainService,Void,Void> {
+    	protected Void doInBackground(MainService... service) {
+    		Log.i(TAG,"Making live cards");
     		mSensors = getSensorList();
     		mLiveCards = new LiveCard[mSensors.length];
-    		mLiveCardViews = new RemoteViews[mSensors.length];
-    		mSensorValues = new String[mSensors.length];
-    		mSensorGraphs = new Bitmap[mSensors.length];
     		// Loop through all the sensors
     		for (int i = 0; i < mSensors.length; i++) {
     			// Create a live card for each sensor
     			mLiveCards[i] = new LiveCard(service[0],mSensors[i]);
-    			mLiveCardViews[i] = new RemoteViews(getPackageName(),R.layout.live_card);
-    			mLiveCardViews[i].setTextViewText(R.id.sensor_name,mSensors[i]);
-    			mLiveCardViews[i].setTextViewText(R.id.value,mSensorValues[i]);
+    			
+    			// Enable direct rendering
+    			mLiveCards[i].setDirectRenderingEnabled(true);
+    			mLiveCards[i].getSurfaceHolder().addCallback(new LiveCardRenderer(mSensors[i]));
     			
     			// Set up the live card's action
-    			Intent menuIntent = new Intent(service[0], MainMenuActivity.class);
-    			menuIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-    			mLiveCards[i].setAction(PendingIntent.getActivity(service[0],0,menuIntent,0));
+    			Intent intent = new Intent(service[0], MainMenuActivity.class);
+    			intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+    			mLiveCards[i].setAction(PendingIntent.getActivity(service[0],0,intent,0));
     			
     			// Publish the live cards
     			mLiveCards[i].attach(service[0]);
     			mLiveCards[i].publish(LiveCard.PublishMode.SILENT);
+    			
+    			// Make a dummy value for the current sensor value
+    			mCurrentSensorValues.put(mSensors[i],0.);
     		}
-    		mLiveCards[0].navigate();
+    		mImageCard = new LiveCard(service[0],IMAGE_CARD_TAG);
+    		mImageCard.setDirectRenderingEnabled(true);
+    		mImageCard.getSurfaceHolder().addCallback(new ImageCardRenderer());
+    		Intent intent = new Intent(service[0], MainMenuActivity.class);
+    		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+    		mImageCard.setAction(PendingIntent.getActivity(service[0], 0, intent, 0));
+    		mImageCard.attach(service[0]);
+    		mImageCard.publish(LiveCard.PublishMode.SILENT);
+    		
+    		if (mLiveCards.length > 0) {
+    			mLiveCards[0].navigate();
+    		}
     		mHandler.post(mUpdateSensorValuesRunnable);
-    		mHandler.post(mUpdateLiveCardsRunnable);
-    		mHandler.post(mUpdateSensorGraphsRunnable);
-    		return true;
+    		return null;
+    	}
+    }
+    
+    public class LiveCardRenderer implements DirectRenderingCallback {
+		private SurfaceHolder mSurfaceHolder;
+    	private boolean mPaused;
+    	private RenderThread mRenderThread;
+    	
+    	private String mSensor;
+    	private int mWidth;
+    	private int mHeight;
+    	
+    	private float lastTimestep;
+    	private JSONArray newDataPoints;
+    	
+    	public LiveCardRenderer(String sensor) {
+			mSensor = sensor;
+			// Set up a renderer for the graph
+		}
+    	
+    	@Override
+    	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    		mSurfaceHolder = holder;
+    		mWidth = width;
+    		mHeight = height;
+    	}
+    	
+    	@Override
+    	public void surfaceCreated(SurfaceHolder holder) {
+    		mSurfaceHolder = holder;
+    		updateRendering();
+    	}
+    	
+    	@Override
+    	public void surfaceDestroyed(SurfaceHolder holder) {
+    		mSurfaceHolder = null;
+    		updateRendering();
+    	}
+    	
+    	@Override
+    	public void renderingPaused(SurfaceHolder holder, boolean paused) {
+    		mPaused = paused;
+    		updateRendering();
+    	}
+    	
+    	// Start or stop rendering according to the timeline state
+    	private synchronized void updateRendering() {
+    		boolean shouldRender = (mSurfaceHolder != null) && !mPaused;
+    		boolean rendering = mRenderThread != null;
+    		if (shouldRender != rendering) {
+    			if (shouldRender) {
+    				mRenderThread = new RenderThread();
+    				mRenderThread.start();
+    			}
+    			else {
+    				mRenderThread.quit();
+    				mRenderThread = null;
+    			}
+    		}
+    	}
+    	
+    	// Draws the view in the SurfaceHolder's canvas
+    	private void draw() {
+    		Canvas canvas;
+    		try {
+    			canvas = mSurfaceHolder.lockCanvas();
+    		}
+    		catch (Exception e) {
+    			Log.e(TAG,"Failed to lock canvas",e);
+    			return;
+    		}
+    		if (canvas != null) {
+    			double sensorValue = mCurrentSensorValues.get(mSensor);
+    			// Draw the background
+    			Paint paint = new Paint(); 
+    			paint.setColor(Color.BLACK); 
+    			paint.setStyle(Style.FILL); 
+    			canvas.drawPaint(paint); 
+    			// Draw the text
+    			paint.setColor(Color.WHITE); 
+    			paint.setTextAlign(Align.CENTER);
+    			paint.setTextSize(50);
+    			int textX = (int)(mWidth*0.85); // Use the right 30% of the screen
+    			int textY = (int)(mHeight/3.); // A third of the height of the screen
+    			canvas.drawText(mSensor, textX, textY, paint);
+    			paint.setTextSize(35);
+    			canvas.drawText(String.valueOf(sensorValue), textX, 2*textY, paint);
+    			// Draw the graph
+    			Bitmap graph = mChartView.toBitmap();
+    			canvas.drawBitmap(graph, null, canvas.getClipBounds(), null);
+    			mSurfaceHolder.unlockCanvasAndPost(canvas);
+    		}
+    	}
+    	
+    	// Redraws in the background
+    	private class RenderThread extends Thread {
+    		private boolean mShouldRun;
+    		
+    		public RenderThread() {
+    			mShouldRun = true;
+    		}
+    		
+    		private synchronized boolean shouldRun() {
+    			return mShouldRun;
+    		}
+    		
+    		public synchronized void quit() {
+    			mShouldRun = false;
+    		}
+    		
+    		@Override
+    		public void run() {
+    			while (shouldRun()) {
+    				draw();
+    				SystemClock.sleep(FRAME_TIME_MILLIS);
+    			}
+    		}
     	}
     }
 
-    @Override
-    public void onDestroy() {
-    	isRunning = false;
-    	mUpdateLiveCardsRunnable.setStop(true);
-    	mUpdateSensorValuesRunnable.setStop(true);
-    	mUpdateSensorGraphsRunnable.setStop(true);
-    	if (!mHandlerThread.quitSafely()) {
-    		Log.e(TAG, "Failed to quit handler thread");
+    public class ImageCardRenderer implements DirectRenderingCallback {
+		private SurfaceHolder mSurfaceHolder;
+    	private boolean mPaused;
+    	private RenderThread mRenderThread;
+    	
+    	@Override
+    	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    		// TODO save surface information
     	}
-    	for (int i = 0; i < mLiveCards.length; i++) {
-    		LiveCard curr_card = mLiveCards[i];
-    		if (curr_card != null && curr_card.isPublished()) {
-    			curr_card.unpublish();
-    			mLiveCards[i] = null;
-    			Log.i(TAG,"Unpublished live card");
-    		}
-    		else {
-    			Log.i(TAG,"Live card not published, so we won't unpublish it");
-    		}
+    	
+    	@Override
+    	public void surfaceCreated(SurfaceHolder holder) {
+    		mSurfaceHolder = holder;
+    		updateRendering();
     	}
-        super.onDestroy();
-    }
-    
-    // Runnable that updates live card contents
-    private class UpdateLiveCardsRunnable implements Runnable {
-    	private boolean mIsStopped = false;
-    	public void run() {
-    		if (!isStopped()) {
-    			for (int i = 0; i < mLiveCards.length; i++) {
-    				if (mLiveCards[i].isPublished()) {
-    					// Update things
-    					if (mSensorGraphs[i] != null) {
-    						mLiveCardViews[i].setImageViewBitmap(R.id.graph, mSensorGraphs[i]);
-    					}
-        				mLiveCardViews[i].setTextViewText(R.id.value,String.valueOf(mSensorValues[i]));
-        				mLiveCards[i].setViews(mLiveCardViews[i]);
-    				}
+    	
+    	@Override
+    	public void surfaceDestroyed(SurfaceHolder holder) {
+    		mSurfaceHolder = null;
+    		updateRendering();
+    	}
+    	
+    	@Override
+    	public void renderingPaused(SurfaceHolder holder, boolean paused) {
+    		Log.i(TAG,String.valueOf(paused));
+    		mPaused = paused;
+    		updateRendering();
+    	}
+    	
+    	// Start or stop rendering according to the timeline state
+    	private synchronized void updateRendering() {
+    		boolean shouldRender = (mSurfaceHolder != null) && !mPaused;
+    		boolean rendering = mRenderThread != null;
+    		if (shouldRender != rendering) {
+    			if (shouldRender) {
+    				mRenderThread = new RenderThread();
+    				mRenderThread.start();
     			}
-    			mHandler.postDelayed(mUpdateLiveCardsRunnable,SCREEN_UPDATE_DELAY_MILLIS);
+    			else {
+    				mRenderThread.quit();
+    				mRenderThread = null;
+    			}
     		}
     	}
-    	public boolean isStopped() {
-    		return mIsStopped;
+    	
+    	// Draws the view in the SurfaceHolder's canvas
+    	private void draw() {
+    		Canvas canvas;
+    		try {
+    			canvas = mSurfaceHolder.lockCanvas();
+    		}
+    		catch (Exception e) {
+    			Log.e(TAG,"Failed to lock canvas",e);
+    			return;
+    		}
+    		if (canvas != null) {
+    			Bitmap image = getMicroscopeImage();
+    			if (image != null) {
+    				canvas.drawBitmap(image,null,canvas.getClipBounds(),null);
+    			}
+    			mSurfaceHolder.unlockCanvasAndPost(canvas);
+    		}
     	}
-    	public void setStop(boolean isStopped) {
-    		this.mIsStopped = isStopped;
+    	
+    	// Redraws in the background
+    	private class RenderThread extends Thread {
+    		private boolean mShouldRun;
+    		
+    		public RenderThread() {
+    			mShouldRun = true;
+    		}
+    		
+    		private synchronized boolean shouldRun() {
+    			return mShouldRun;
+    		}
+    		
+    		public synchronized void quit() {
+    			mShouldRun = false;
+    		}
+    		
+    		@Override
+    		public void run() {
+    			while (shouldRun()) {
+    				draw();
+    				SystemClock.sleep(IMAGE_FRAME_TIME_MILLIS);
+    			}
+    		}
     	}
     }
     
@@ -140,8 +335,13 @@ public class MainService extends Service {
     	private boolean mIsStopped = false;
     	public void run() {
     		if (!isStopped()) {
-    			for (int i = 0; i < mSensors.length; i++) {
-    				mSensorValues[i] = getSensorValue(mSensors[i]);
+    			JSONObject values = getSensorValues();
+    			if (values != null) {
+    				for (int i = 0; i < mSensors.length; i++) {
+    					if (values.has(mSensors[i])) {
+    						mCurrentSensorValues.put(mSensors[i], values.getDouble(mSensors[i]));
+    					}
+    				}
     			}
     		}
     		mHandler.postDelayed(mUpdateSensorValuesRunnable, DATA_UPDATE_DELAY_MILLIS);
@@ -154,35 +354,91 @@ public class MainService extends Service {
     	}
     }
     
-    private class UpdateSensorGraphsRunnable implements Runnable {
-    	private boolean mIsStopped = false;
-    	public void run() {
-    		if (!isStopped()) {
-    			for (int i = 0; i < mSensors.length; i++) {
-    				try {
-    					InputStream in = new java.net.URL("http://planar-contact-601.appspot.com/graph/"+mSensors[i]).openStream();
-    					mSensorGraphs[i] = BitmapFactory.decodeStream(in);
-    				}
-    				catch (Exception e) {
-    					Log.e(TAG,"Failed to load graph", e);
-    				}
-    			}
+    /*private class DataPoint {
+    	public final float value;
+    	public final long timestamp;
+    	public DataPoint(float _value, long _timestamp) {
+    		value = _value;
+    		timestamp = _timestamp;
+    	}
+    }*/
+
+    @Override
+    public void onDestroy() {
+    	isRunning = false;
+    	mUpdateSensorValuesRunnable.setStop(true);
+    	for (int i = 0; i < mLiveCards.length; i++) {
+    		if (mLiveCards[i] != null && mLiveCards[i].isPublished()) {
+    			mLiveCards[i].unpublish();
+    			mLiveCards[i] = null;
+    			Log.i(TAG,"Unpublished live card");
     		}
-    		mHandler.postDelayed(mUpdateSensorGraphsRunnable, IMAGE_UPDATE_DELAY_MILLIS);
     	}
-    	
-    	public boolean isStopped() {
-    		return mIsStopped;
+    	if (mImageCard != null && mImageCard.isPublished()) {
+    		mImageCard.unpublish();
+    		mImageCard = null;
+    		Log.i(TAG,"Unpublished image card");
     	}
-    	
-    	public void setStop(boolean isStopped) {
-    		this.mIsStopped = isStopped;
-    	}
+        super.onDestroy();
     }
     
 	@Override
 	public IBinder onBind(Intent intent) {
 		return null;
+	}
+	
+	private Bitmap getMicroscopeImage() {
+		try {
+			URL url = new URL("http://planar-contact-601.appspot.com/picture/view");
+			HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+			connection.setDoInput(true);
+			connection.connect();
+			InputStream input = connection.getInputStream();
+			Bitmap res = BitmapFactory.decodeStream(input);
+			return res;
+		}
+		catch (IOException e) {
+			Log.e(TAG,"Failed to download image", e);
+			return null;
+		}
+	}
+	
+	private String[] getSensorList() {
+		try {
+			String raw = getURL("http://planar-contact-601.appspot.com/sensor_names");
+			JSONArray list = new JSONArray(new JSONTokener(raw));
+			String[] res = new String[list.length()];
+			for (int i = 0; i < list.length(); i++) {
+				res[i] = list.getString(i);
+			}
+			return res;
+		}
+		catch (Exception e) {
+			Log.e(TAG,"Failed to get sensor list",e);
+			return new String[0];
+		}
+	}
+	
+	private JSONObject getSensorValues() {
+		try {
+			String values = getURL("http://planar-contact-601.appspot.com/sensor_values");
+			return new JSONObject(new JSONTokener(values));
+		} catch (Exception e) {
+			Log.e(TAG,"Failed to get sensor values",e);
+			return null;
+		}
+	}
+	
+	private JSONArray getDataPoints(String sensor, float last_timestamp) {
+		try {
+			String url = "http://planar-contact-601.appspot.com/?sensor=" + sensor + "&last_timestamp=" + String.valueOf(last_timestamp);
+			String values = getURL(url);
+			return new JSONArray(new JSONTokener(values));
+		}
+		catch (Exception e) {
+			Log.e(TAG,"Failed to get data points",e);
+			return null;
+		}
 	}
 	
 	private String getURL(String _url) throws Exception {
@@ -195,29 +451,4 @@ public class MainService extends Service {
 		}
 		return buffer.toString();
 	}
-	
-	private String[] getSensorList() {
-		String sensors = "";
-		try {
-			sensors = getURL("http://planar-contact-601.appspot.com/sensors");
-		} catch (Exception e) {
-			Log.e(TAG, "Failed to get sensor list", e);
-		}
-		if (sensors.contains(",")) {
-			return sensors.split(",");
-		}
-		else {
-			return new String[] {sensors};
-		}
-	}
-	
-	private String getSensorValue(String sensor) {
-		try {
-			return getURL("http://planar-contact-601.appspot.com/value/"+sensor);
-		} catch (Exception e) {
-			Log.e(TAG,"Failed to get sensor value",e);
-			return null;
-		}
-	}
 }
-
