@@ -11,6 +11,7 @@ import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
@@ -40,7 +41,6 @@ public class MainService extends Service {
 	private String[] mSensors;
     private LiveCard[] mLiveCards;
     private Map<String,Double> mCurrentSensorValues = new HashMap<String,Double>();
-    // private List<DataPoint>[] mDataPointsToGraph;
     
     private LiveCard mImageCard;
     private static final String IMAGE_CARD_TAG = "microscope_image";
@@ -53,9 +53,12 @@ public class MainService extends Service {
     private static final long FRAME_TIME_MILLIS = 100;
     private static final long IMAGE_FRAME_TIME_MILLIS = 1000;
 
+    // Called when the app is opened. Initialize all the things
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+    	// We have to check whether or not the app is already running
     	if (!isRunning) {
+    		// Start the app
     		isRunning = true;
     		mHandlerThread = new HandlerThread("myHandlerThread");
     		mHandlerThread.start();
@@ -98,6 +101,7 @@ public class MainService extends Service {
     			// Make a dummy value for the current sensor value
     			mCurrentSensorValues.put(mSensors[i],0.);
     		}
+    		// Make the live card to show the webcam image. Same setup as above
     		mImageCard = new LiveCard(service[0],IMAGE_CARD_TAG);
     		mImageCard.setDirectRenderingEnabled(true);
     		mImageCard.getSurfaceHolder().addCallback(new ImageCardRenderer());
@@ -106,15 +110,16 @@ public class MainService extends Service {
     		mImageCard.setAction(PendingIntent.getActivity(service[0], 0, intent, 0));
     		mImageCard.attach(service[0]);
     		mImageCard.publish(LiveCard.PublishMode.SILENT);
-    		
     		if (mLiveCards.length > 0) {
     			mLiveCards[0].navigate();
     		}
+    		// Start getting sensor values from the server
     		mHandler.post(mUpdateSensorValuesRunnable);
     		return null;
     	}
     }
     
+    // Used to render each of the live cards
     public class LiveCardRenderer implements DirectRenderingCallback {
 		private SurfaceHolder mSurfaceHolder;
     	private boolean mPaused;
@@ -124,12 +129,11 @@ public class MainService extends Service {
     	private int mWidth;
     	private int mHeight;
     	
-    	private float lastTimestep;
-    	private JSONArray newDataPoints;
+    	/*private float lastTimestamp;
+    	private JSONArray newDataPoints;*/
     	
     	public LiveCardRenderer(String sensor) {
 			mSensor = sensor;
-			// Set up a renderer for the graph
 		}
     	
     	@Override
@@ -199,12 +203,12 @@ public class MainService extends Service {
     			canvas.drawText(mSensor, textX, textY, paint);
     			paint.setTextSize(35);
     			canvas.drawText(String.valueOf(sensorValue), textX, 2*textY, paint);
-    			// Draw the graph
+    			// TODO: Draw the graph
     			mSurfaceHolder.unlockCanvasAndPost(canvas);
     		}
     	}
     	
-    	// Redraws in the background
+    	// A thread that will periodically call the draw function to redraw this card
     	private class RenderThread extends Thread {
     		private boolean mShouldRun;
     		
@@ -230,6 +234,7 @@ public class MainService extends Service {
     	}
     }
 
+    // Used to render the live card that shows the webcam image
     public class ImageCardRenderer implements DirectRenderingCallback {
 		private SurfaceHolder mSurfaceHolder;
     	private boolean mPaused;
@@ -286,6 +291,7 @@ public class MainService extends Service {
     			return;
     		}
     		if (canvas != null) {
+    			// TODO: Load the image in a different thread
     			Bitmap image = getMicroscopeImage();
     			if (image != null) {
     				canvas.drawBitmap(image,null,canvas.getClipBounds(),null);
@@ -294,7 +300,7 @@ public class MainService extends Service {
     		}
     	}
     	
-    	// Redraws in the background
+    	// A thread that will periodically call the draw function to redraw this card
     	private class RenderThread extends Thread {
     		private boolean mShouldRun;
     		
@@ -320,6 +326,21 @@ public class MainService extends Service {
     	}
     }
     
+    private class DataPoint {
+    	private int mValue;
+    	private int mTimestamp;
+    	DataPoint(int value, int timestamp) {
+    		mValue = value;
+    		mTimestamp = timestamp;
+    	}
+    	public int getValue() {
+    		return mValue;
+    	}
+    	public int getTimestamp() {
+    		return mTimestamp;
+    	}
+    }
+    
     // Runnable that updates sensor values
     private class UpdateSensorValuesRunnable implements Runnable {
     	private boolean mIsStopped = false;
@@ -328,8 +349,9 @@ public class MainService extends Service {
     			JSONObject values = getSensorValues();
     			if (values != null) {
     				for (int i = 0; i < mSensors.length; i++) {
-    					if (values.has(mSensors[i])) {
-    						mCurrentSensorValues.put(mSensors[i], values.getDouble(mSensors[i]));
+    					try {
+    						mCurrentSensorValues.put(mSensors[i],values.getDouble(mSensors[i]));
+    					} catch (JSONException e) {
     					}
     				}
     			}
@@ -343,16 +365,8 @@ public class MainService extends Service {
     		this.mIsStopped = isStopped;
     	}
     }
-    
-    /*private class DataPoint {
-    	public final float value;
-    	public final long timestamp;
-    	public DataPoint(float _value, long _timestamp) {
-    		value = _value;
-    		timestamp = _timestamp;
-    	}
-    }*/
 
+    // Called when our app is exited. Clean up everything
     @Override
     public void onDestroy() {
     	isRunning = false;
@@ -377,6 +391,7 @@ public class MainService extends Service {
 		return null;
 	}
 	
+	// Pull a image from the server
 	private Bitmap getMicroscopeImage() {
 		try {
 			URL url = new URL("http://planar-contact-601.appspot.com/picture/view");
@@ -393,6 +408,7 @@ public class MainService extends Service {
 		}
 	}
 	
+	// Get a list of sensors from the server
 	private String[] getSensorList() {
 		try {
 			String raw = getURL("http://planar-contact-601.appspot.com/sensor_names");
@@ -409,6 +425,7 @@ public class MainService extends Service {
 		}
 	}
 	
+	// Get the values of all of the sensors
 	private JSONObject getSensorValues() {
 		try {
 			String values = getURL("http://planar-contact-601.appspot.com/sensor_values");
@@ -419,7 +436,7 @@ public class MainService extends Service {
 		}
 	}
 	
-	private JSONArray getDataPoints(String sensor, float last_timestamp) {
+	/*private JSONArray getDataPoints(String sensor, float last_timestamp) {
 		try {
 			String url = "http://planar-contact-601.appspot.com/?sensor=" + sensor + "&last_timestamp=" + String.valueOf(last_timestamp);
 			String values = getURL(url);
@@ -429,8 +446,9 @@ public class MainService extends Service {
 			Log.e(TAG,"Failed to get data points",e);
 			return null;
 		}
-	}
+	}*/
 	
+	// Download data from a URL
 	private String getURL(String _url) throws Exception {
 		URL url = new URL(_url);
 		InputStream is = url.openStream();
