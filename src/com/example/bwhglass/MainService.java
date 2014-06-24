@@ -3,33 +3,35 @@ package com.example.bwhglass;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.MalformedURLException;
 import java.net.URL;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.Map;
 
 import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
+import com.googlecode.charts4j.AxisLabels;
+import com.googlecode.charts4j.AxisLabelsFactory;
+import com.googlecode.charts4j.Data;
+import com.googlecode.charts4j.Fills;
+import com.googlecode.charts4j.GCharts;
+import com.googlecode.charts4j.Plots;
+import com.googlecode.charts4j.ScatterPlot;
+import com.googlecode.charts4j.ScatterPlotData;
+import com.googlecode.charts4j.Shape;
 
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
-import org.json.JSONTokener;
+import static com.googlecode.charts4j.Color.WHITE;
+import static com.googlecode.charts4j.Color.BLUE;
+
+import org.json.*;
 
 import android.app.Service;
 import android.app.PendingIntent;
 import android.content.Intent;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Paint.Align;
-import android.graphics.Paint.Style;
-import android.os.AsyncTask;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.IBinder;
-import android.os.SystemClock;
+import android.graphics.*;
+import android.os.*;
 import android.util.Log;
 import android.view.SurfaceHolder;
 
@@ -41,6 +43,8 @@ public class MainService extends Service {
 	private String[] mSensors;
     private LiveCard[] mLiveCards;
     private Map<String,Double> mCurrentSensorValues = new HashMap<String,Double>();
+    private Map<String, ArrayList<DataPoint>> mSensorGraphData = new HashMap<String, ArrayList<DataPoint>>();
+    private Map<String,Bitmap> mCurrentSensorGraphs = new HashMap<String,Bitmap>();
     
     private LiveCard mImageCard;
     private static final String IMAGE_CARD_TAG = "microscope_image";
@@ -48,8 +52,10 @@ public class MainService extends Service {
     private HandlerThread mHandlerThread;
     private Handler mHandler;
     private final UpdateSensorValuesRunnable mUpdateSensorValuesRunnable = new UpdateSensorValuesRunnable();
+    private final UpdateSensorGraphsRunnable mUpdateSensorGraphsRunnable = new UpdateSensorGraphsRunnable();
     
     private static final long DATA_UPDATE_DELAY_MILLIS = 500;
+    private static final long IMAGE_UPDATE_DELAY_MILLIS = 5000;
     private static final long FRAME_TIME_MILLIS = 100;
     private static final long IMAGE_FRAME_TIME_MILLIS = 1000;
 
@@ -100,6 +106,12 @@ public class MainService extends Service {
     			
     			// Make a dummy value for the current sensor value
     			mCurrentSensorValues.put(mSensors[i],0.);
+    			
+    			// Make a dummy value for the sensor graph data
+    			mSensorGraphData.put(mSensors[i], new ArrayList<DataPoint>());
+    			
+    			// Make a dummy value for the current sensor graph
+    			mCurrentSensorGraphs.put(mSensors[i], null);
     		}
     		// Make the live card to show the webcam image. Same setup as above
     		mImageCard = new LiveCard(service[0],IMAGE_CARD_TAG);
@@ -115,6 +127,7 @@ public class MainService extends Service {
     		}
     		// Start getting sensor values from the server
     		mHandler.post(mUpdateSensorValuesRunnable);
+    		mHandler.post(mUpdateSensorGraphsRunnable);
     		return null;
     	}
     }
@@ -128,9 +141,6 @@ public class MainService extends Service {
     	private String mSensor;
     	private int mWidth;
     	private int mHeight;
-    	
-    	/*private float lastTimestamp;
-    	private JSONArray newDataPoints;*/
     	
     	public LiveCardRenderer(String sensor) {
 			mSensor = sensor;
@@ -192,18 +202,27 @@ public class MainService extends Service {
     			// Draw the background
     			Paint paint = new Paint(); 
     			paint.setColor(Color.BLACK); 
-    			paint.setStyle(Style.FILL); 
+    			paint.setStyle(Paint.Style.FILL); 
     			canvas.drawPaint(paint); 
     			// Draw the text
     			paint.setColor(Color.WHITE); 
-    			paint.setTextAlign(Align.CENTER);
-    			paint.setTextSize(50);
+    			paint.setTextAlign(Paint.Align.CENTER);
+    			paint.setTextSize(30);
     			int textX = (int)(mWidth*0.85); // Use the right 30% of the screen
     			int textY = (int)(mHeight/3.); // A third of the height of the screen
     			canvas.drawText(mSensor, textX, textY, paint);
-    			paint.setTextSize(35);
+    			paint.setTextSize(30);
     			canvas.drawText(String.valueOf(sensorValue), textX, 2*textY, paint);
-    			// TODO: Draw the graph
+    			Bitmap graph = mCurrentSensorGraphs.get(mSensor);
+    			if (graph != null) {
+    				Rect dest = canvas.getClipBounds();
+    				dest.inset((int)(mWidth*0.15), 0);
+    				dest.offset(-(int)(mWidth*0.15), 0);
+    				canvas.drawBitmap(graph, null, dest, null);
+    			}
+    			else {
+    				Log.i(TAG,"No graph found");
+    			}
     			mSurfaceHolder.unlockCanvasAndPost(canvas);
     		}
     	}
@@ -326,21 +345,6 @@ public class MainService extends Service {
     	}
     }
     
-    private class DataPoint {
-    	private int mValue;
-    	private int mTimestamp;
-    	DataPoint(int value, int timestamp) {
-    		mValue = value;
-    		mTimestamp = timestamp;
-    	}
-    	public int getValue() {
-    		return mValue;
-    	}
-    	public int getTimestamp() {
-    		return mTimestamp;
-    	}
-    }
-    
     // Runnable that updates sensor values
     private class UpdateSensorValuesRunnable implements Runnable {
     	private boolean mIsStopped = false;
@@ -365,12 +369,117 @@ public class MainService extends Service {
     		this.mIsStopped = isStopped;
     	}
     }
+    
+    // Runnable that updates the microscope image and the graphs
+    private class UpdateSensorGraphsRunnable implements Runnable {
+    	private boolean mIsStopped = false;
+    	public void run() {
+    		if (!isStopped()) {
+    			// Loop through each of the sensors
+    			for (int i = 0; i < mSensors.length; i++) {
+    				String curr_sensor = mSensors[i];
+    				ArrayList<DataPoint> curr_data = mSensorGraphData.get(curr_sensor);
+    				double lastTimestamp = curr_data.size() > 0 ? curr_data.get(curr_data.size()-1).getTimestamp() : 0.;
+    				// Get a list of the new data points for this sensor
+    				JSONArray newPoints = getDataPoints(curr_sensor, lastTimestamp);
+    				for (int j = 0; j < newPoints.length(); j++) {
+    					// Save each data point
+    					try {
+    						JSONObject point = newPoints.getJSONObject(j);
+    						double timestamp = (Double)point.get("timestamp");
+    						double value = (Double)point.get("value");
+    						curr_data.add(new DataPoint(timestamp, value));
+    					}
+    					catch (JSONException e) {
+    						Log.e(TAG, "JSON error", e);
+    						continue;
+    					}
+    				}
+    				// Clear out points that are over an hour old
+    				while (true) {
+    					if (curr_data.size() > 0 && curr_data.get(0).getTimestamp() < (curr_data.get(curr_data.size()-1).getTimestamp())-3600) {
+    						Log.i(TAG,"Deleting old data point");
+    						curr_data.remove(0);
+    					}
+    					else {
+    						break;
+    					}
+    				}
+    				// If there are no points don't show a graph
+    				if (curr_data.size() == 0) {
+    					continue;
+    				}
+    				// Store the timestamps and values in separate arrays for graphing
+    				ArrayList<Double> timestamps = new ArrayList<Double>();
+    				ArrayList<Double> values = new ArrayList<Double>();
+    				for (int j = 0; j < curr_data.size(); j++) {
+    					DataPoint curr_point = curr_data.get(j);
+    					timestamps.add(curr_point.getTimestamp());
+    					values.add(curr_point.getValue());
+    				}
+    				// Scale the timestamp data
+    				double maxTimestamp = Collections.max(timestamps);
+    				double zeroVal = maxTimestamp - 3600.;
+    				for (int j = 0; j < timestamps.size(); j++) {
+    					double currVal = timestamps.get(j);
+    					currVal -= zeroVal;
+    					currVal /= 36;
+    					timestamps.set(j,currVal);
+    				}
+    				// Scale the value data
+    				double maxVal = Collections.max(values);
+    				double minVal = Collections.min(values);
+    				maxVal *= 1.2;
+    				minVal *= 0.8;
+    				double intervalSize = maxVal - minVal;
+    				for (int j = 0; j < values.size(); j++) {
+    					double currVal = values.get(j);
+    					currVal -= minVal;
+    					currVal /= intervalSize;
+    					currVal *= 100;
+    					values.set(j,currVal);
+    				}
+    				
+    				Data xData = Data.newData(timestamps);
+    				Data yData = Data.newData(values);
+    				ScatterPlotData data = Plots.newScatterPlotData(xData, yData);
+    		        data.addShapeMarkers(Shape.DIAMOND, BLUE, 30);
+    		        data.setColor(BLUE);
+        			ScatterPlot chart = GCharts.newScatterPlot(data);
+        			chart.setSize(400,400);
+        			chart.setGrid(20, 20, 3, 2);
+        			AxisLabels yAxisLabels = AxisLabelsFactory.newNumericRangeAxisLabels(minVal, maxVal);
+        	        chart.addYAxisLabels(yAxisLabels);
+
+        	        chart.setBackgroundFill(Fills.newSolidFill(WHITE));
+        	        chart.setAreaFill(Fills.newSolidFill(WHITE));
+        			try {
+        				Log.i(TAG,chart.toURLString());
+    					URL chartURL = new URL(chart.toURLString());
+    					mCurrentSensorGraphs.put(curr_sensor, getImage(chartURL));
+    				} catch (MalformedURLException e) {
+    					Log.e(TAG,"Invalid chart URL", e);
+    				} catch (IOException e) {
+    					Log.e(TAG,"Failed to download graph", e);
+    				}
+    			}
+    		}
+    		mHandler.postDelayed(mUpdateSensorGraphsRunnable,IMAGE_UPDATE_DELAY_MILLIS);
+    	}
+    	public boolean isStopped() {
+    		return mIsStopped;
+    	}
+    	public void setStop(boolean isStopped) {
+    		this.mIsStopped = isStopped;
+    	}
+    }
 
     // Called when our app is exited. Clean up everything
     @Override
     public void onDestroy() {
     	isRunning = false;
     	mUpdateSensorValuesRunnable.setStop(true);
+    	mUpdateSensorGraphsRunnable.setStop(true);
     	for (int i = 0; i < mLiveCards.length; i++) {
     		if (mLiveCards[i] != null && mLiveCards[i].isPublished()) {
     			mLiveCards[i].unpublish();
@@ -391,21 +500,40 @@ public class MainService extends Service {
 		return null;
 	}
 	
-	// Pull a image from the server
+	class DataPoint {
+		private final double mTimestamp;
+		private final double mValue;
+		DataPoint(double timestamp, double value) {
+			mTimestamp = timestamp;
+			mValue = value;
+		}
+		public double getTimestamp() {
+			return mTimestamp;
+		}
+		public double getValue() {
+			return mValue;
+		}
+	}
+	
+	// Pull an image from our server
 	private Bitmap getMicroscopeImage() {
 		try {
-			URL url = new URL("http://planar-contact-601.appspot.com/picture/view");
-			HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-			connection.setDoInput(true);
-			connection.connect();
-			InputStream input = connection.getInputStream();
-			Bitmap res = BitmapFactory.decodeStream(input);
-			return res;
+			return getImage(new URL("http://planar-contact-601.appspot.com/picture/view"));
 		}
 		catch (IOException e) {
-			Log.e(TAG,"Failed to download image", e);
+			Log.e(TAG,"Failed to download microscope image",e);
 			return null;
 		}
+	}
+	
+	// Pull an image from a URL
+	private Bitmap getImage(URL url) throws IOException {
+		HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+		connection.setDoInput(true);
+		connection.connect();
+		InputStream input = connection.getInputStream();
+		Bitmap res = BitmapFactory.decodeStream(input);
+		return res;
 	}
 	
 	// Get a list of sensors from the server
@@ -436,9 +564,10 @@ public class MainService extends Service {
 		}
 	}
 	
-	/*private JSONArray getDataPoints(String sensor, float last_timestamp) {
+	// Get the new data points that we will need to graph
+	private JSONArray getDataPoints(String sensor, double last_timestamp) {
 		try {
-			String url = "http://planar-contact-601.appspot.com/?sensor=" + sensor + "&last_timestamp=" + String.valueOf(last_timestamp);
+			String url = "http://planar-contact-601.appspot.com/graphing_data?sensor=" + sensor + "&last_timestamp=" + String.valueOf(last_timestamp);
 			String values = getURL(url);
 			return new JSONArray(new JSONTokener(values));
 		}
@@ -446,10 +575,10 @@ public class MainService extends Service {
 			Log.e(TAG,"Failed to get data points",e);
 			return null;
 		}
-	}*/
+	}
 	
 	// Download data from a URL
-	private String getURL(String _url) throws Exception {
+	private String getURL(String _url) throws MalformedURLException, IOException {
 		URL url = new URL(_url);
 		InputStream is = url.openStream();
 		int ptr = 0;
