@@ -14,6 +14,8 @@ import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
 import com.googlecode.charts4j.AxisLabels;
 import com.googlecode.charts4j.AxisLabelsFactory;
+import com.googlecode.charts4j.AxisStyle;
+import com.googlecode.charts4j.AxisTextAlignment;
 import com.googlecode.charts4j.Data;
 import com.googlecode.charts4j.Fills;
 import com.googlecode.charts4j.GCharts;
@@ -443,18 +445,18 @@ public class MainService extends Service {
     				Data xData = Data.newData(timestamps);
     				Data yData = Data.newData(values);
     				ScatterPlotData data = Plots.newScatterPlotData(xData, yData);
-    		        data.addShapeMarkers(Shape.DIAMOND, BLUE, 30);
+    		        data.addShapeMarkers(Shape.DIAMOND, BLUE, 20);
     		        data.setColor(BLUE);
         			ScatterPlot chart = GCharts.newScatterPlot(data);
         			chart.setSize(400,400);
         			chart.setGrid(20, 20, 3, 2);
         			AxisLabels yAxisLabels = AxisLabelsFactory.newNumericRangeAxisLabels(minVal, maxVal);
+        			yAxisLabels.setAxisStyle(AxisStyle.newAxisStyle(BLUE, 30, AxisTextAlignment.CENTER));
         	        chart.addYAxisLabels(yAxisLabels);
 
         	        chart.setBackgroundFill(Fills.newSolidFill(WHITE));
         	        chart.setAreaFill(Fills.newSolidFill(WHITE));
         			try {
-        				Log.i(TAG,chart.toURLString());
     					URL chartURL = new URL(chart.toURLString());
     					mCurrentSensorGraphs.put(curr_sensor, getImage(chartURL));
     				} catch (MalformedURLException e) {
