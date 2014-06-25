@@ -44,9 +44,9 @@ public class MainService extends Service {
 	
 	private String[] mSensors;
     private LiveCard[] mLiveCards;
-    private Map<String,Double> mCurrentSensorValues = new HashMap<String,Double>();
-    private Map<String, ArrayList<DataPoint>> mSensorGraphData = new HashMap<String, ArrayList<DataPoint>>();
-    private Map<String,Bitmap> mCurrentSensorGraphs = new HashMap<String,Bitmap>();
+    private Map<String,Double> mCurrentSensorValues;
+    private Map<String, ArrayList<DataPoint>> mSensorGraphData;
+    private Map<String,Bitmap> mCurrentSensorGraphs;
     
     private LiveCard mImageCard;
     private static final String IMAGE_CARD_TAG = "microscope_image";
@@ -88,6 +88,9 @@ public class MainService extends Service {
     		Log.i(TAG,"Making live cards");
     		mSensors = getSensorList();
     		mLiveCards = new LiveCard[mSensors.length];
+    		mCurrentSensorValues = new HashMap<String,Double>();
+    		mSensorGraphData = new HashMap<String, ArrayList<DataPoint>>();
+    		mCurrentSensorGraphs = new HashMap<String,Bitmap>();
     		// Loop through all the sensors
     		for (int i = 0; i < mSensors.length; i++) {
     			// Create a live card for each sensor
