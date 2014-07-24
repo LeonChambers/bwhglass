@@ -1,10 +1,12 @@
 package com.example.bwhglass;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.net.URLConnection;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.ArrayList;
@@ -12,17 +14,7 @@ import java.util.Map;
 
 import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
-import com.googlecode.charts4j.AxisLabels;
-import com.googlecode.charts4j.AxisLabelsFactory;
-import com.googlecode.charts4j.AxisStyle;
-import com.googlecode.charts4j.AxisTextAlignment;
-import com.googlecode.charts4j.Data;
-import com.googlecode.charts4j.Fills;
-import com.googlecode.charts4j.GCharts;
-import com.googlecode.charts4j.Plots;
-import com.googlecode.charts4j.ScatterPlot;
-import com.googlecode.charts4j.ScatterPlotData;
-import com.googlecode.charts4j.Shape;
+import com.googlecode.charts4j.*;
 
 import static com.googlecode.charts4j.Color.WHITE;
 import static com.googlecode.charts4j.Color.BLUE;
@@ -33,6 +25,8 @@ import android.app.Service;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.graphics.*;
+import android.graphics.Color;
+import android.media.MediaPlayer;
 import android.os.*;
 import android.util.Log;
 import android.view.SurfaceHolder;
@@ -48,21 +42,23 @@ public class MainService extends Service {
     private Map<String, ArrayList<DataPoint>> mSensorGraphData;
     private Map<String,Bitmap> mCurrentSensorGraphs;
     
-    private LiveCard mImageCard;
-    private static final String IMAGE_CARD_TAG = "microscope_image";
+    private LiveCard mVideoCard;
+    private static final String VIDEO_CARD_TAG = "microscope video";
+    private static final String VIDEO_FILE_NAME = Environment.getExternalStorageDirectory()+"/microscope_video.mp4";
+    private static final String TEMP_VIDEO_FILE_NAME = Environment.getExternalStorageDirectory()+"/temp_microscope_video.mp4";
     
     private HandlerThread mHandlerThread;
     private Handler mHandler;
     private final UpdateSensorValuesRunnable mUpdateSensorValuesRunnable = new UpdateSensorValuesRunnable();
     private final UpdateSensorGraphsRunnable mUpdateSensorGraphsRunnable = new UpdateSensorGraphsRunnable();
+    private final UpdateMicroscopeVideoRunnable mUpdateMicroscopeVideoRunnable = new UpdateMicroscopeVideoRunnable();
     
     private static final long DATA_UPDATE_DELAY_MILLIS = 500;
-    private static final long IMAGE_UPDATE_DELAY_MILLIS = 5000;
+    private static final long GRAPH_UPDATE_DELAY_MILLIS = 5000;
     private static final long FRAME_TIME_MILLIS = 100;
-    private static final long IMAGE_FRAME_TIME_MILLIS = 1000;
+    private static final long VIDEO_UPDATE_DELAY_MILLIS = 10*1000;
 
     // Called when the app is opened. Initialize all the things
-    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
     	// We have to check whether or not the app is already running
     	if (!isRunning) {
@@ -85,15 +81,26 @@ public class MainService extends Service {
     // Live cards must be loaded asynchronously so that we are not going web queries in the main thread
     private class MakeLiveCardsTask extends AsyncTask<MainService,Void,Void> {
     	protected Void doInBackground(MainService... service) {
-    		Log.i(TAG,"Making live cards");
+    		Log.i(TAG,"Setting up app");
     		mSensors = getSensorList();
     		mLiveCards = new LiveCard[mSensors.length];
     		mCurrentSensorValues = new HashMap<String,Double>();
     		mSensorGraphData = new HashMap<String, ArrayList<DataPoint>>();
     		mCurrentSensorGraphs = new HashMap<String,Bitmap>();
-    		// Loop through all the sensors
     		for (int i = 0; i < mSensors.length; i++) {
-    			// Create a live card for each sensor
+    			// Make dummy values for everything
+    			mCurrentSensorValues.put(mSensors[i],0.);
+    			mSensorGraphData.put(mSensors[i], new ArrayList<DataPoint>());
+    			mCurrentSensorGraphs.put(mSensors[i], null);
+    		}
+    		Log.i(TAG,"Loading initial data");
+    		// Get real initial data
+    		mUpdateSensorValuesRunnable.run();
+    		mUpdateSensorGraphsRunnable.run();
+    		mUpdateMicroscopeVideoRunnable.run();
+    		Log.i(TAG,"Making live cards");
+    		// Create the live cards
+    		for (int i = 0; i < mSensors.length; i++) {
     			mLiveCards[i] = new LiveCard(service[0],mSensors[i]);
     			
     			// Enable direct rendering
@@ -108,31 +115,19 @@ public class MainService extends Service {
     			// Publish the live cards
     			mLiveCards[i].attach(service[0]);
     			mLiveCards[i].publish(LiveCard.PublishMode.SILENT);
-    			
-    			// Make a dummy value for the current sensor value
-    			mCurrentSensorValues.put(mSensors[i],0.);
-    			
-    			// Make a dummy value for the sensor graph data
-    			mSensorGraphData.put(mSensors[i], new ArrayList<DataPoint>());
-    			
-    			// Make a dummy value for the current sensor graph
-    			mCurrentSensorGraphs.put(mSensors[i], null);
     		}
-    		// Make the live card to show the webcam image. Same setup as above
-    		mImageCard = new LiveCard(service[0],IMAGE_CARD_TAG);
-    		mImageCard.setDirectRenderingEnabled(true);
-    		mImageCard.getSurfaceHolder().addCallback(new ImageCardRenderer());
+    		// Make the live card to show the webcam video. Same setup as above
+    		mVideoCard = new LiveCard(service[0],VIDEO_CARD_TAG);
+    		mVideoCard.setDirectRenderingEnabled(true);
+    		mVideoCard.getSurfaceHolder().addCallback(new VideoCardRenderer());
     		Intent intent = new Intent(service[0], MainMenuActivity.class);
     		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-    		mImageCard.setAction(PendingIntent.getActivity(service[0], 0, intent, 0));
-    		mImageCard.attach(service[0]);
-    		mImageCard.publish(LiveCard.PublishMode.SILENT);
+    		mVideoCard.setAction(PendingIntent.getActivity(service[0],0,intent,0));
+    		mVideoCard.attach(service[0]);
+    		mVideoCard.publish(LiveCard.PublishMode.SILENT);
     		if (mLiveCards.length > 0) {
     			mLiveCards[0].navigate();
     		}
-    		// Start getting sensor values from the server
-    		mHandler.post(mUpdateSensorValuesRunnable);
-    		mHandler.post(mUpdateSensorGraphsRunnable);
     		return null;
     	}
     }
@@ -215,9 +210,13 @@ public class MainService extends Service {
     			paint.setTextSize(30);
     			int textX = (int)(mWidth*0.85); // Use the right 30% of the screen
     			int textY = (int)(mHeight/3.); // A third of the height of the screen
-    			canvas.drawText(mSensor, textX, textY, paint);
+    			String sensor = mSensor;
+    			if (sensor.equals("temperature")) {
+    				sensor = "Temperature";
+    			}
+    			canvas.drawText(sensor, textX, textY, paint);
     			paint.setTextSize(30);
-    			canvas.drawText(String.valueOf(sensorValue), textX, 2*textY, paint);
+    			canvas.drawText(String.format("%.5g", sensorValue), textX, 2*textY, paint);
     			Bitmap graph = mCurrentSensorGraphs.get(mSensor);
     			if (graph != null) {
     				Rect dest = canvas.getClipBounds();
@@ -258,15 +257,17 @@ public class MainService extends Service {
     	}
     }
 
-    // Used to render the live card that shows the webcam image
-    public class ImageCardRenderer implements DirectRenderingCallback {
+ // Used to render the live card that shows the webcam video
+    public class VideoCardRenderer implements DirectRenderingCallback {
 		private SurfaceHolder mSurfaceHolder;
     	private boolean mPaused;
     	private RenderThread mRenderThread;
     	
+    	public VideoCardRenderer() {
+    	}
+    	
     	@Override
     	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-    		// TODO save surface information
     	}
     	
     	@Override
@@ -283,7 +284,6 @@ public class MainService extends Service {
     	
     	@Override
     	public void renderingPaused(SurfaceHolder holder, boolean paused) {
-    		Log.i(TAG,String.valueOf(paused));
     		mPaused = paused;
     		updateRendering();
     	}
@@ -304,32 +304,15 @@ public class MainService extends Service {
     		}
     	}
     	
-    	// Draws the view in the SurfaceHolder's canvas
-    	private void draw() {
-    		Canvas canvas;
-    		try {
-    			canvas = mSurfaceHolder.lockCanvas();
-    		}
-    		catch (Exception e) {
-    			Log.e(TAG,"Failed to lock canvas",e);
-    			return;
-    		}
-    		if (canvas != null) {
-    			// TODO: Load the image in a different thread
-    			Bitmap image = getMicroscopeImage();
-    			if (image != null) {
-    				canvas.drawBitmap(image,null,canvas.getClipBounds(),null);
-    			}
-    			mSurfaceHolder.unlockCanvasAndPost(canvas);
-    		}
-    	}
-    	
     	// A thread that will periodically call the draw function to redraw this card
-    	private class RenderThread extends Thread {
+    	private class RenderThread extends Thread implements MediaPlayer.OnCompletionListener {
     		private boolean mShouldRun;
+    		private boolean videoIsPlaying;
+    		private MediaPlayer mMediaPlayer;
     		
     		public RenderThread() {
     			mShouldRun = true;
+    			videoIsPlaying = false;
     		}
     		
     		private synchronized boolean shouldRun() {
@@ -340,11 +323,36 @@ public class MainService extends Service {
     			mShouldRun = false;
     		}
     		
+    		public synchronized void onCompletion(MediaPlayer mp) {
+    			videoIsPlaying = false;
+    		}
+    		
     		@Override
     		public void run() {
     			while (shouldRun()) {
-    				draw();
-    				SystemClock.sleep(IMAGE_FRAME_TIME_MILLIS);
+    				try {
+    					copyFile(new File(TEMP_VIDEO_FILE_NAME), new File(VIDEO_FILE_NAME));
+    					mMediaPlayer = new MediaPlayer();
+        				mMediaPlayer.setDataSource(VIDEO_FILE_NAME);
+        				mMediaPlayer.setDisplay(mSurfaceHolder);
+        				mMediaPlayer.setScreenOnWhilePlaying(true);
+        				mMediaPlayer.setOnCompletionListener(this);
+        				mMediaPlayer.prepare();
+        				mMediaPlayer.start();
+        				videoIsPlaying = true;
+        				while (shouldRun() && videoIsPlaying) {
+        					SystemClock.sleep(100);
+        				}
+        				mMediaPlayer.stop();
+        				mMediaPlayer.reset();
+        				mMediaPlayer.release();
+        			}
+        			catch (IOException e) {
+        				Log.e(VIDEO_CARD_TAG,"Failed to read microscope video file",e);
+        				mMediaPlayer.stop();
+        				mMediaPlayer.reset();
+        				mMediaPlayer.release();
+        			}
     			}
     		}
     	}
@@ -364,8 +372,8 @@ public class MainService extends Service {
     					}
     				}
     			}
+    			mHandler.postDelayed(mUpdateSensorValuesRunnable, DATA_UPDATE_DELAY_MILLIS);
     		}
-    		mHandler.postDelayed(mUpdateSensorValuesRunnable, DATA_UPDATE_DELAY_MILLIS);
     	}
     	public boolean isStopped() {
     		return mIsStopped;
@@ -375,7 +383,7 @@ public class MainService extends Service {
     	}
     }
     
-    // Runnable that updates the microscope image and the graphs
+    // Runnable that updates the graphs
     private class UpdateSensorGraphsRunnable implements Runnable {
     	private boolean mIsStopped = false;
     	public void run() {
@@ -452,7 +460,7 @@ public class MainService extends Service {
     		        data.setColor(BLUE);
         			ScatterPlot chart = GCharts.newScatterPlot(data);
         			chart.setSize(400,400);
-        			chart.setGrid(20, 20, 3, 2);
+        			chart.setGrid(25, 20, 3, 2);
         			AxisLabels yAxisLabels = AxisLabelsFactory.newNumericRangeAxisLabels(minVal, maxVal);
         			yAxisLabels.setAxisStyle(AxisStyle.newAxisStyle(BLUE, 30, AxisTextAlignment.CENTER));
         	        chart.addYAxisLabels(yAxisLabels);
@@ -468,8 +476,8 @@ public class MainService extends Service {
     					Log.e(TAG,"Failed to download graph", e);
     				}
     			}
+    			mHandler.postDelayed(mUpdateSensorGraphsRunnable,GRAPH_UPDATE_DELAY_MILLIS);
     		}
-    		mHandler.postDelayed(mUpdateSensorGraphsRunnable,IMAGE_UPDATE_DELAY_MILLIS);
     	}
     	public boolean isStopped() {
     		return mIsStopped;
@@ -479,12 +487,30 @@ public class MainService extends Service {
     	}
     }
 
+    // Runnable that updates the microscope video
+    private class UpdateMicroscopeVideoRunnable implements Runnable {
+    	private boolean mIsStopped = false;
+    	public void run() {
+    		if (!isStopped()) {
+    			getMicroscopeVideo();
+    			mHandler.postDelayed(mUpdateMicroscopeVideoRunnable, VIDEO_UPDATE_DELAY_MILLIS);
+    		}
+    	}
+    	public boolean isStopped() {
+    		return mIsStopped;
+    	}
+    	public void setStop(boolean isStopped) {
+    		this.mIsStopped = isStopped;
+    	}
+    }
+    
     // Called when our app is exited. Clean up everything
     @Override
     public void onDestroy() {
     	isRunning = false;
     	mUpdateSensorValuesRunnable.setStop(true);
     	mUpdateSensorGraphsRunnable.setStop(true);
+    	mUpdateMicroscopeVideoRunnable.setStop(true);
     	for (int i = 0; i < mLiveCards.length; i++) {
     		if (mLiveCards[i] != null && mLiveCards[i].isPublished()) {
     			mLiveCards[i].unpublish();
@@ -492,9 +518,9 @@ public class MainService extends Service {
     			Log.i(TAG,"Unpublished live card");
     		}
     	}
-    	if (mImageCard != null && mImageCard.isPublished()) {
-    		mImageCard.unpublish();
-    		mImageCard = null;
+    	if (mVideoCard != null && mVideoCard.isPublished()) {
+    		mVideoCard.unpublish();
+    		mVideoCard = null;
     		Log.i(TAG,"Unpublished image card");
     	}
         super.onDestroy();
@@ -520,17 +546,6 @@ public class MainService extends Service {
 		}
 	}
 	
-	// Pull an image from our server
-	private Bitmap getMicroscopeImage() {
-		try {
-			return getImage(new URL("http://planar-contact-601.appspot.com/picture/view"));
-		}
-		catch (IOException e) {
-			Log.e(TAG,"Failed to download microscope image",e);
-			return null;
-		}
-	}
-	
 	// Pull an image from a URL
 	private Bitmap getImage(URL url) throws IOException {
 		HttpURLConnection connection = (HttpURLConnection) url.openConnection();
@@ -539,6 +554,77 @@ public class MainService extends Service {
 		InputStream input = connection.getInputStream();
 		Bitmap res = BitmapFactory.decodeStream(input);
 		return res;
+	}
+	
+	// Pull the microscope video from a URL
+	private void getMicroscopeVideo() {
+		try {
+			URL url = new URL("http://planar-contact-601.appspot.com/video/view");
+	        long startTime = System.currentTimeMillis();
+	        Log.i(TAG, "video download beginning: "+url);
+	        URLConnection ucon = url.openConnection();
+	        ucon.setReadTimeout(0);
+	        ucon.setConnectTimeout(0);
+	        // Define InputStreams to read from the URLConnection.
+	        InputStream is = ucon.getInputStream();
+	        BufferedInputStream inStream = new BufferedInputStream(is, 1024*5);
+	        File file = new File(TEMP_VIDEO_FILE_NAME);
+	        FileOutputStream outStream = new FileOutputStream(file);
+	        FileLock lock = outStream.getChannel().lock();
+	        byte[] buff = new byte[1024*5];
+	        // Read bytes (and store them) until there is nothing more to read(-1)
+	        int len;
+	        while ((len = inStream.read(buff)) != -1) {
+	            outStream.write(buff,0,len);
+	        }
+	        // Clean up
+	        outStream.flush();
+	        lock.release();
+	        outStream.close();
+	        inStream.close();
+	        Log.i(TAG, "download completed in "
+	                + ((System.currentTimeMillis() - startTime) / 1000)
+	                + " sec");
+		}
+		catch (IOException e) {
+			Log.e(VIDEO_CARD_TAG, "Failed to download microscope video", e);
+		}
+	}
+
+	// Copy a file from <src> to <dst>
+	public void copyFile(File src, File dst) {
+		// Acquire i/o streams for each of the files
+		RandomAccessFile inFile = null;
+		FileOutputStream outStream = null;
+		try {
+			inFile = new RandomAccessFile(src, "rw");
+			outStream = new FileOutputStream(dst);
+		}
+	    catch (FileNotFoundException e) {
+	    	Log.e(TAG,"File not found", e);
+	    	return;
+	    }
+	    FileChannel inChannel = inFile.getChannel();
+	    FileChannel outChannel = outStream.getChannel();
+	    FileLock inLock = null;
+	    FileLock outLock = null;
+	    try {
+	    	inLock = inChannel.lock();
+	    	outLock = outChannel.lock();
+		    inChannel.transferTo(0, inChannel.size(), outChannel);
+		}
+		catch (IOException e) {
+			Log.e(TAG,"Failed to acquire locks and copy file", e);
+		}
+		try {
+		    inLock.release();
+		    inFile.close();
+		    outLock.release();
+		    outStream.close();
+		}
+		catch (Exception e) {
+			Log.e(TAG,"An error occurred while cleaning up",e);
+		}
 	}
 	
 	// Get a list of sensors from the server
