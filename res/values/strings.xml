@@ -3,5 +3,6 @@
 
     <string name="app_name">BWH Glass</string>
     <string name="stop">Stop</string>
+    <string name="toggle_view">Toggle View</string>
 
 </resources>

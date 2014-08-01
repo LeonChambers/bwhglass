@@ -26,15 +26,18 @@ import android.app.PendingIntent;
 import android.content.Intent;
 import android.graphics.*;
 import android.graphics.Color;
+import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.os.*;
 import android.util.Log;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 
 public class MainService extends Service {
 
 	private boolean isRunning = false;
 	private static String TAG = "MAIN_SERVICE";
+	public final MyBinder my_binder = new MyBinder();
 	
 	private String[] mSensors;
     private LiveCard[] mLiveCards;
@@ -43,6 +46,10 @@ public class MainService extends Service {
     private Map<String,Bitmap> mCurrentSensorGraphs;
     
     private LiveCard mVideoCard;
+    private VideoCardRenderer mVideoCardRenderer;
+    private enum VideoCardState {
+    	VIDEO, GRAPH
+    }
     private static final String VIDEO_CARD_TAG = "microscope video";
     private static final String VIDEO_FILE_NAME = Environment.getExternalStorageDirectory()+"/microscope_video.mp4";
     private static final String TEMP_VIDEO_FILE_NAME = Environment.getExternalStorageDirectory()+"/temp_microscope_video.mp4";
@@ -119,8 +126,9 @@ public class MainService extends Service {
     		// Make the live card to show the webcam video. Same setup as above
     		mVideoCard = new LiveCard(service[0],VIDEO_CARD_TAG);
     		mVideoCard.setDirectRenderingEnabled(true);
-    		mVideoCard.getSurfaceHolder().addCallback(new VideoCardRenderer());
-    		Intent intent = new Intent(service[0], MainMenuActivity.class);
+    		mVideoCardRenderer = new VideoCardRenderer();
+    		mVideoCard.getSurfaceHolder().addCallback(mVideoCardRenderer);
+    		Intent intent = new Intent(service[0], VideoMenuActivity.class);
     		intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
     		mVideoCard.setAction(PendingIntent.getActivity(service[0],0,intent,0));
     		mVideoCard.attach(service[0]);
@@ -262,12 +270,18 @@ public class MainService extends Service {
 		private SurfaceHolder mSurfaceHolder;
     	private boolean mPaused;
     	private RenderThread mRenderThread;
+    	private VideoCardState mVideoCardState;
+    	private int mWidth;
+    	private int mHeight;
     	
     	public VideoCardRenderer() {
+    		mVideoCardState = VideoCardState.VIDEO;
     	}
     	
     	@Override
     	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+    		mWidth = width;
+    		mHeight = height;
     	}
     	
     	@Override
@@ -288,6 +302,16 @@ public class MainService extends Service {
     		updateRendering();
     	}
     	
+    	public void toggleView() {
+    		if (mVideoCardState == VideoCardState.VIDEO) {
+    			mVideoCardState = VideoCardState.GRAPH;
+    		}
+    		else {
+    			mVideoCardState = VideoCardState.VIDEO;
+    		}
+    		mRenderThread.onStateChange();
+    	}
+    	
     	// Start or stop rendering according to the timeline state
     	private synchronized void updateRendering() {
     		boolean shouldRender = (mSurfaceHolder != null) && !mPaused;
@@ -304,15 +328,24 @@ public class MainService extends Service {
     		}
     	}
     	
-    	// A thread that will periodically call the draw function to redraw this card
     	private class RenderThread extends Thread implements MediaPlayer.OnCompletionListener {
     		private boolean mShouldRun;
     		private boolean videoIsPlaying;
     		private MediaPlayer mMediaPlayer;
+    		private MediaMetadataRetriever mFrameGetter;
+    		private ArrayList<DataPoint> mDataPoints;
+    		private Bitmap mGraph;
+    		private UpdateGraphRunnable mUpdateGraphRunnable;
+        	private HandlerThread mGraphHandlerThread;
+        	private Handler mGraphHandler;
     		
     		public RenderThread() {
     			mShouldRun = true;
     			videoIsPlaying = false;
+    			mGraphHandlerThread = new HandlerThread("graphHandlerThread");
+    			mGraphHandlerThread.start();
+    			mGraphHandler = new Handler(mGraphHandlerThread.getLooper());
+    			mUpdateGraphRunnable = new UpdateGraphRunnable();
     		}
     		
     		private synchronized boolean shouldRun() {
@@ -327,21 +360,90 @@ public class MainService extends Service {
     			videoIsPlaying = false;
     		}
     		
+    		public void onStateChange() {
+    			if (mVideoCardState == VideoCardState.VIDEO) {
+    				Canvas canvas = mSurfaceHolder.lockCanvas();
+    				Paint paint = new Paint(); 
+	    			paint.setColor(0); 
+	    			paint.setStyle(Paint.Style.FILL); 
+	    			canvas.drawPaint(paint);
+	    			mSurfaceHolder.unlockCanvasAndPost(canvas);
+    				mMediaPlayer.setDisplay(mSurfaceHolder);
+    				mUpdateGraphRunnable.setStop(true);
+    			}
+    			else {
+    				mMediaPlayer.setDisplay(null);
+    				mUpdateGraphRunnable.setStop(false);
+    				mGraphHandler.post(mUpdateGraphRunnable);
+    			}
+    		}
+    		
     		@Override
     		public void run() {
     			while (shouldRun()) {
     				try {
     					copyFile(new File(TEMP_VIDEO_FILE_NAME), new File(VIDEO_FILE_NAME));
     					mMediaPlayer = new MediaPlayer();
+    					mDataPoints = new ArrayList<DataPoint>();
         				mMediaPlayer.setDataSource(VIDEO_FILE_NAME);
-        				mMediaPlayer.setDisplay(mSurfaceHolder);
+        				if (mVideoCardState == VideoCardState.VIDEO){
+        					mMediaPlayer.setDisplay(mSurfaceHolder);
+        				}
+        				else {
+        					mMediaPlayer.setDisplay(null);
+        				}
         				mMediaPlayer.setScreenOnWhilePlaying(true);
         				mMediaPlayer.setOnCompletionListener(this);
         				mMediaPlayer.prepare();
+        				mFrameGetter = new MediaMetadataRetriever();
+        				mFrameGetter.setDataSource(VIDEO_FILE_NAME);
         				mMediaPlayer.start();
         				videoIsPlaying = true;
         				while (shouldRun() && videoIsPlaying) {
-        					SystemClock.sleep(100);
+        					long timestamp = mMediaPlayer.getCurrentPosition();
+        					Bitmap current_frame = mFrameGetter.getFrameAtTime(timestamp*1000,MediaMetadataRetriever.OPTION_CLOSEST);
+        					DataPoint dataPoint = new DataPoint(timestamp,getFrameIntensity(current_frame));
+        					mDataPoints.add(dataPoint);
+        					if (mVideoCardState == VideoCardState.GRAPH) {
+        						Canvas canvas;
+        			    		try {
+        			    			canvas = mSurfaceHolder.lockCanvas();
+        			    		}
+        			    		catch (Exception e) {
+        			    			Log.e(TAG,"Failed to lock canvas",e);
+        			    			continue;
+        			    		}
+        			    		if (canvas != null) {
+        			    			// Draw the background
+        			    			Paint paint = new Paint(); 
+        			    			paint.setColor(Color.BLACK); 
+        			    			paint.setStyle(Paint.Style.FILL); 
+        			    			canvas.drawPaint(paint); 
+        			    			// Draw the text
+        			    			/*paint.setColor(Color.WHITE); 
+        			    			paint.setTextAlign(Paint.Align.CENTER);
+        			    			paint.setTextSize(30);
+        			    			int textX = (int)(mWidth*0.85); // Use the right 30% of the screen
+        			    			int textY = (int)(mHeight/3.); // A third of the height of the screen
+        			    			String sensor = mSensor;
+        			    			if (sensor.equals("temperature")) {
+        			    				sensor = "Temperature";
+        			    			}
+        			    			canvas.drawText(sensor, textX, textY, paint);
+        			    			paint.setTextSize(30);
+        			    			canvas.drawText(String.format("%.5g", sensorValue), textX, 2*textY, paint);*/
+        			    			if (mGraph != null) {
+        			    				Rect dest = canvas.getClipBounds();
+        			    				dest.inset((int)(mWidth*0.15), 0);
+        			    				dest.offset(-(int)(mWidth*0.15), 0);
+        			    				canvas.drawBitmap(mGraph, null, dest, null);
+        			    			}
+        			    			else {
+        			    				Log.i(TAG,"No graph found");
+        			    			}
+        			    			mSurfaceHolder.unlockCanvasAndPost(canvas);
+        			    		}
+        					}
         				}
         				mMediaPlayer.stop();
         				mMediaPlayer.reset();
@@ -354,6 +456,76 @@ public class MainService extends Service {
         				mMediaPlayer.release();
         			}
     			}
+    		}
+    		private class UpdateGraphRunnable implements Runnable {
+    	    	private boolean mIsStopped = false;
+    	    	public void run() {
+    	    		if (!isStopped() && mDataPoints.size() != 0) {
+    	    			ArrayList<Double> timestamps = new ArrayList<Double>();
+    	    			ArrayList<Double> values = new ArrayList<Double>();
+    	    			for (int i = 0; i < mDataPoints.size(); i++) {
+    	    				DataPoint curr_point = mDataPoints.get(i);
+    	    				timestamps.add(curr_point.getTimestamp());
+    	    				values.add(curr_point.getValue());
+    	    			}
+    	    			// Scale the timestamp data
+    	    			double maxTimestamp = Collections.max(timestamps);
+    	    			double minTimestamp = Collections.min(timestamps);
+    	    			maxTimestamp *= 1.2;
+    	    			minTimestamp *= 0.8;
+    	    			double intervalSize = maxTimestamp - minTimestamp;
+    	    			for (int i = 0; i < timestamps.size(); i++) {
+    	    				double currTimestamp = timestamps.get(i);
+    	    				currTimestamp -= minTimestamp;
+    	    				currTimestamp /= intervalSize;
+    	    				currTimestamp *= 100;
+    	    				timestamps.set(i,currTimestamp);
+    	    			}
+    	    			// Scale the value data
+    	    			double maxVal = Collections.max(values);
+    	    			double minVal = Collections.min(values);
+    	    			maxVal *= 1.2;
+    	    			minVal *= 0.8;
+    	    			intervalSize = maxVal - minVal;
+    	    			for (int i = 0; i < values.size(); i++) {
+    	    				double currVal = values.get(i);
+    	    				currVal -= minVal;
+    	    				currVal /= intervalSize;
+    	    				currVal *= 100;
+    	    				values.set(i,currVal);
+    	    			}
+    	    			
+    	    			Data xData = Data.newData(timestamps);
+    	    			Data yData = Data.newData(values);
+    	    			ScatterPlotData data = Plots.newScatterPlotData(xData, yData);
+    	    		    data.addShapeMarkers(Shape.DIAMOND, BLUE, 20);
+    	    		    data.setColor(BLUE);
+    	        		ScatterPlot chart = GCharts.newScatterPlot(data);
+    	       			chart.setSize(400,400);
+    	       			chart.setGrid(25, 20, 3, 2);
+    	        		AxisLabels yAxisLabels = AxisLabelsFactory.newNumericRangeAxisLabels(minVal, maxVal);
+    	       			yAxisLabels.setAxisStyle(AxisStyle.newAxisStyle(BLUE, 30, AxisTextAlignment.CENTER));
+    	       	        chart.addYAxisLabels(yAxisLabels);
+
+    	       	        chart.setBackgroundFill(Fills.newSolidFill(WHITE));
+    	       	        chart.setAreaFill(Fills.newSolidFill(WHITE));
+    	       			try {
+    	   					URL chartURL = new URL(chart.toURLString());
+    	   					mGraph = getImage(chartURL);
+    	    			} catch (MalformedURLException e) {
+    	    				Log.e(TAG,"Invalid chart URL", e);
+    	    			} catch (IOException e) {
+    	    				Log.e(TAG,"Failed to download graph", e);
+    	   				}
+    	   				mGraphHandler.post(mUpdateGraphRunnable);
+    	    		}
+    	    	}
+    	    	public boolean isStopped() {
+    	    		return mIsStopped;
+    	    	}
+    	    	public void setStop(boolean isStopped) {
+    	    		this.mIsStopped = isStopped;
+    	    	}
     		}
     	}
     }
@@ -526,9 +698,15 @@ public class MainService extends Service {
         super.onDestroy();
     }
     
+    // Binders to expose methods in this service to other activities (Specifically menus)
+    public class MyBinder extends Binder {
+    	public void toggleView() {
+    		mVideoCardRenderer.toggleView();
+    	}
+    }
 	@Override
 	public IBinder onBind(Intent intent) {
-		return null;
+		return my_binder;
 	}
 	
 	class DataPoint {
@@ -554,6 +732,21 @@ public class MainService extends Service {
 		InputStream input = connection.getInputStream();
 		Bitmap res = BitmapFactory.decodeStream(input);
 		return res;
+	}
+	
+	// Get the intensity of a bitmap
+	private double getFrameIntensity(Bitmap frame) {
+		int[] pixels = new int[frame.getHeight()*frame.getWidth()];
+		frame.getPixels(pixels,0,frame.getWidth(),0,0,frame.getWidth(),frame.getHeight());
+		long red = 0;
+		long green = 0;
+		long blue = 0;
+		for (int i = 0; i < pixels.length; i++) {
+			red += Color.red(pixels[i]);
+			green += Color.green(pixels[i]);
+			blue += Color.blue(pixels[i]);
+		}
+		return (red + green + blue) / pixels.length;
 	}
 	
 	// Pull the microscope video from a URL

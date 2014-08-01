@@ -19,13 +19,16 @@ public final class R {
     }
     public static final class id {
         public static final int stop=0x7f080000;
+        public static final int toggle_view=0x7f080001;
     }
     public static final class menu {
         public static final int main=0x7f070000;
+        public static final int video=0x7f070001;
     }
     public static final class string {
         public static final int app_name=0x7f050000;
         public static final int stop=0x7f050001;
+        public static final int toggle_view=0x7f050002;
     }
     public static final class style {
         public static final int MenuTheme=0x7f060000;

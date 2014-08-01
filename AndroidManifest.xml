@@ -9,6 +9,7 @@
         android:targetSdkVersion="19" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     
     <application
         android:allowBackup="true"
@@ -17,6 +18,10 @@
 
         <activity
             android:name="com.example.bwhglass.MainMenuActivity"
+            android:theme="@style/MenuTheme" />
+        
+        <activity
+            android:name="com.example.bwhglass.VideoMenuActivity"
             android:theme="@style/MenuTheme" />
         
         <service
