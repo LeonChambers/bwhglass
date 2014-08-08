@@ -2,9 +2,10 @@
 <classpath>
 	<classpathentry kind="src" path="src"/>
 	<classpathentry kind="src" path="gen"/>
-	<classpathentry kind="lib" path="lib/json-java.jar"/>
+	<classpathentry kind="lib" path="C:/Users/alik/Downloads/org.json-20120521.jar"/>
 	<classpathentry kind="con" path="com.android.ide.eclipse.adt.ANDROID_FRAMEWORK"/>
 	<classpathentry exported="true" kind="con" path="com.android.ide.eclipse.adt.LIBRARIES"/>
 	<classpathentry exported="true" kind="con" path="com.android.ide.eclipse.adt.DEPENDENCIES"/>
+	<classpathentry kind="lib" path="C:/Users/alik/Documents/adt-bundle-windows-x86-20140321/adt-bundle-windows-x86-20140321/sdk/add-ons/addon-google_gdk-google-19/libs/json-lib-2.4-jdk15.jar"/>
 	<classpathentry kind="output" path="bin/classes"/>
 </classpath>

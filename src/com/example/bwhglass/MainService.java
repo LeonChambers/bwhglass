@@ -15,6 +15,7 @@ import java.util.Map;
 import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
 import com.googlecode.charts4j.*;
+import com.googlecode.charts4j.parameters.FillAreaType;
 
 import static com.googlecode.charts4j.Color.WHITE;
 import static com.googlecode.charts4j.Color.BLUE;
@@ -63,9 +64,9 @@ public class MainService extends Service {
     private static final long DATA_UPDATE_DELAY_MILLIS = 500;
     private static final long GRAPH_UPDATE_DELAY_MILLIS = 5000;
     private static final long FRAME_TIME_MILLIS = 100;
-    private static final long VIDEO_UPDATE_DELAY_MILLIS = 10*1000;
-
-    // Called when the app is opened. Initialize all the things
+    private static final long VIDEO_UPDATE_DELAY_MILLIS = 60*1000;
+    
+       // Called when the app is opened. Initialize all the things
     public int onStartCommand(Intent intent, int flags, int startId) {
     	// We have to check whether or not the app is already running
     	if (!isRunning) {
@@ -264,7 +265,27 @@ public class MainService extends Service {
     		}
     	}
     }
-
+    
+	
+    public class myBeatingRate{
+    	private ArrayList<Double> myList;
+    	private double sum=0;
+    	
+    	public myBeatingRate(){
+    		myList = new ArrayList<>();
+    	}
+    	public void add (Double value){
+    		myList.add(value);
+    		sum+=value;
+    	}
+    	public double mean(){
+    		 return sum/myList.size();
+    	}
+    	public void delete(){
+    		myList.removeAll(myList);
+    	}
+    }
+    
  // Used to render the live card that shows the webcam video
     public class VideoCardRenderer implements DirectRenderingCallback {
 		private SurfaceHolder mSurfaceHolder;
@@ -328,6 +349,8 @@ public class MainService extends Service {
     		}
     	}
     	
+    		
+    	// =================================================================================== //
     	private class RenderThread extends Thread implements MediaPlayer.OnCompletionListener {
     		private boolean mShouldRun;
     		private boolean videoIsPlaying;
@@ -338,7 +361,11 @@ public class MainService extends Service {
     		private UpdateGraphRunnable mUpdateGraphRunnable;
         	private HandlerThread mGraphHandlerThread;
         	private Handler mGraphHandler;
-    		
+        	private Double BeatingRate = new Double (0.0);
+        	private ArrayList<Double> peaks = new ArrayList<>();
+			private int numberOfpoints;
+			
+			
     		public RenderThread() {
     			mShouldRun = true;
     			videoIsPlaying = false;
@@ -399,10 +426,58 @@ public class MainService extends Service {
         				mFrameGetter.setDataSource(VIDEO_FILE_NAME);
         				mMediaPlayer.start();
         				videoIsPlaying = true;
+        				
+        				myBeatingRate myBR = new myBeatingRate();
+        				int N = 50;
+        				// number of elements
+    					int framerate = 30;//MediaMetadataRetriever.METADATA_KEY_BITRATE;
+        				
         				while (shouldRun() && videoIsPlaying) {
         					long timestamp = mMediaPlayer.getCurrentPosition();
         					Bitmap current_frame = mFrameGetter.getFrameAtTime(timestamp*1000,MediaMetadataRetriever.OPTION_CLOSEST);
         					DataPoint dataPoint = new DataPoint(timestamp,getFrameIntensity(current_frame));
+        					
+        					//=========================================================================================================//
+        																/*Beating Rate */
+        									
+        					                 // ------  Keep a list of N most recent points  ----- //
+
+        					if(peaks.size()< N )  {// increase list while number of points <N
+        					    peaks.add(getFrameIntensity(current_frame)); 
+        					}else{ 
+        						   if (peaks.size()>=N && peaks.get(0)!=Double.MIN_VALUE){
+        						        peaks.add(0, Double.MIN_VALUE);
+        					       }
+        						   if (peaks.size()>=N && peaks.get(peaks.size()-1)!=Double.MIN_VALUE){
+       						           peaks.add(Double.MIN_VALUE);
+       						           break;
+        						   }       					       
+        						peaks.remove(1);  // if list is complete, update with new values
+        						peaks.set(peaks.size()-1, getFrameIntensity(current_frame));
+        						peaks.add(Double.MIN_VALUE);
+        					}               				    
+        					                // -----   Finding Peaks  ------- //
+        					BeatingRate =  0.0;
+        					int i,j;
+        				 for (i = 1; i <= N && peaks.size()==N+2 ; i++){	
+        		     		  numberOfpoints = 0;
+        		     		  
+        			          if (peaks.get(i - 1) <= peaks.get(i) && peaks.get(i) >= peaks.get(i + 1)){
+        			              for(j = i+1; j <= N;j++){
+        			            	  if (peaks.get(j - 1) <= peaks.get(j) && peaks.get(j) >= peaks.get(j + 1) || j==N+1){
+        			            		  break;
+        			            	  }
+        			            	  else numberOfpoints+=1;
+        			              }
+        			              i=j;  // Continue search from the last Peak found
+        			              BeatingRate= (numberOfpoints!=0)?(double)(framerate/numberOfpoints):0;
+        			          }
+        			           myBR.add(BeatingRate);  
+        			           System.out.println ("Beating Rate is "+ myBR.mean() ) ;
+        			           /* Update Beating Rate Value with myBR.mean() */
+        		     	 }  
+        				 
+        					//=============================================================================================================
         					mDataPoints.add(dataPoint);
         					if (mVideoCardState == VideoCardState.GRAPH) {
         						Canvas canvas;
@@ -498,7 +573,7 @@ public class MainService extends Service {
     	    			Data xData = Data.newData(timestamps);
     	    			Data yData = Data.newData(values);
     	    			ScatterPlotData data = Plots.newScatterPlotData(xData, yData);
-    	    		    data.addShapeMarkers(Shape.DIAMOND, BLUE, 20);
+    	    		    data.addShapeMarkers(Shape.DIAMOND, BLUE, 15);
     	    		    data.setColor(BLUE);
     	        		ScatterPlot chart = GCharts.newScatterPlot(data);
     	       			chart.setSize(400,400);
@@ -509,8 +584,19 @@ public class MainService extends Service {
 
     	       	        chart.setBackgroundFill(Fills.newSolidFill(WHITE));
     	       	        chart.setAreaFill(Fills.newSolidFill(WHITE));
+    	       	        
+    	       	        /*Line Chart*/
+    	       	        Plot plot = Plots.newPlot(yData);
+    	       	        LineChart linechart = GCharts.newLineChart(plot);
+    	       	         
+    	       	        linechart.setTitle("Intensity", com.googlecode.charts4j.Color.BLACK, 12);
+    	       	        linechart.setBackgroundFill(Fills.newSolidFill(WHITE));
+    	       	        linechart.setAreaFill(Fills.newSolidFill(WHITE));
+    	                linechart.addYAxisLabels(AxisLabelsFactory.newNumericRangeAxisLabels(0.0, 20.0));
+    	       	        
+    	                
     	       			try {
-    	   					URL chartURL = new URL(chart.toURLString());
+    	   					URL chartURL = new URL(linechart.toURLString());
     	   					mGraph = getImage(chartURL);
     	    			} catch (MalformedURLException e) {
     	    				Log.e(TAG,"Invalid chart URL", e);
