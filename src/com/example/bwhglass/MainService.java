@@ -15,7 +15,6 @@ import java.util.Map;
 import com.google.android.glass.timeline.DirectRenderingCallback;
 import com.google.android.glass.timeline.LiveCard;
 import com.googlecode.charts4j.*;
-import com.googlecode.charts4j.parameters.FillAreaType;
 
 import static com.googlecode.charts4j.Color.WHITE;
 import static com.googlecode.charts4j.Color.BLUE;
@@ -31,7 +30,6 @@ import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.os.*;
 import android.util.Log;
-import android.view.Surface;
 import android.view.SurfaceHolder;
 
 public class MainService extends Service {
@@ -272,7 +270,7 @@ public class MainService extends Service {
     	private double sum=0;
     	
     	public myBeatingRate(){
-    		myList = new ArrayList<>();
+    		myList = new ArrayList<Double>();
     	}
     	public void add (Double value){
     		myList.add(value);
@@ -349,8 +347,6 @@ public class MainService extends Service {
     		}
     	}
     	
-    		
-    	// =================================================================================== //
     	private class RenderThread extends Thread implements MediaPlayer.OnCompletionListener {
     		private boolean mShouldRun;
     		private boolean videoIsPlaying;
@@ -361,10 +357,7 @@ public class MainService extends Service {
     		private UpdateGraphRunnable mUpdateGraphRunnable;
         	private HandlerThread mGraphHandlerThread;
         	private Handler mGraphHandler;
-        	private Double BeatingRate = new Double (0.0);
-        	private ArrayList<Double> peaks = new ArrayList<>();
-			private int numberOfpoints;
-			
+        	private DataPoint lastPeak;
 			
     		public RenderThread() {
     			mShouldRun = true;
@@ -389,12 +382,7 @@ public class MainService extends Service {
     		
     		public void onStateChange() {
     			if (mVideoCardState == VideoCardState.VIDEO) {
-    				Canvas canvas = mSurfaceHolder.lockCanvas();
-    				Paint paint = new Paint(); 
-	    			paint.setColor(0); 
-	    			paint.setStyle(Paint.Style.FILL); 
-	    			canvas.drawPaint(paint);
-	    			mSurfaceHolder.unlockCanvasAndPost(canvas);
+    				Log.i(VIDEO_CARD_TAG,"Switching to Video mode");
     				mMediaPlayer.setDisplay(mSurfaceHolder);
     				mUpdateGraphRunnable.setStop(true);
     			}
@@ -428,64 +416,35 @@ public class MainService extends Service {
         				videoIsPlaying = true;
         				
         				myBeatingRate myBR = new myBeatingRate();
-        				int N = 50;
-        				// number of elements
-    					int framerate = 30;//MediaMetadataRetriever.METADATA_KEY_BITRATE;
+        				lastPeak = new DataPoint(0,0);
         				
         				while (shouldRun() && videoIsPlaying) {
         					long timestamp = mMediaPlayer.getCurrentPosition();
         					Bitmap current_frame = mFrameGetter.getFrameAtTime(timestamp*1000,MediaMetadataRetriever.OPTION_CLOSEST);
-        					DataPoint dataPoint = new DataPoint(timestamp,getFrameIntensity(current_frame));
-        					
-        					//=========================================================================================================//
-        																/*Beating Rate */
-        									
-        					                 // ------  Keep a list of N most recent points  ----- //
+        					double frame_intensity = getFrameIntensity(current_frame);
+        					DataPoint currPoint = new DataPoint(timestamp,frame_intensity);
+        					mDataPoints.add(currPoint);
+        					if (mDataPoints.size() > 5) {
+	        					DataPoint prevPoint = mDataPoints.get(mDataPoints.size()-2);
+	        					DataPoint prevPrevPoint = mDataPoints.get(mDataPoints.size()-3);
+	        					if (prevPoint.getValue() > currPoint.getValue() && prevPoint.getValue() > prevPrevPoint.getValue()) {
+	        						if (lastPeak.getValue() == 0) {
+	        							lastPeak = prevPoint;
+	        						}
+	        						else {
+	        							myBR.add(1000/(prevPoint.getTimestamp()-lastPeak.getTimestamp()));
+	        							lastPeak = prevPoint;
+	        						}
+	        					}
+        					}
 
-        					if(peaks.size()< N )  {// increase list while number of points <N
-        					    peaks.add(getFrameIntensity(current_frame)); 
-        					}else{ 
-        						   if (peaks.size()>=N && peaks.get(0)!=Double.MIN_VALUE){
-        						        peaks.add(0, Double.MIN_VALUE);
-        					       }
-        						   if (peaks.size()>=N && peaks.get(peaks.size()-1)!=Double.MIN_VALUE){
-       						           peaks.add(Double.MIN_VALUE);
-       						           break;
-        						   }       					       
-        						peaks.remove(1);  // if list is complete, update with new values
-        						peaks.set(peaks.size()-1, getFrameIntensity(current_frame));
-        						peaks.add(Double.MIN_VALUE);
-        					}               				    
-        					                // -----   Finding Peaks  ------- //
-        					BeatingRate =  0.0;
-        					int i,j;
-        				 for (i = 1; i <= N && peaks.size()==N+2 ; i++){	
-        		     		  numberOfpoints = 0;
-        		     		  
-        			          if (peaks.get(i - 1) <= peaks.get(i) && peaks.get(i) >= peaks.get(i + 1)){
-        			              for(j = i+1; j <= N;j++){
-        			            	  if (peaks.get(j - 1) <= peaks.get(j) && peaks.get(j) >= peaks.get(j + 1) || j==N+1){
-        			            		  break;
-        			            	  }
-        			            	  else numberOfpoints+=1;
-        			              }
-        			              i=j;  // Continue search from the last Peak found
-        			              BeatingRate= (numberOfpoints!=0)?(double)(framerate/numberOfpoints):0;
-        			          }
-        			           myBR.add(BeatingRate);  
-        			           System.out.println ("Beating Rate is "+ myBR.mean() ) ;
-        			           /* Update Beating Rate Value with myBR.mean() */
-        		     	 }  
-        				 
-        					//=============================================================================================================
-        					mDataPoints.add(dataPoint);
         					if (mVideoCardState == VideoCardState.GRAPH) {
         						Canvas canvas;
         			    		try {
         			    			canvas = mSurfaceHolder.lockCanvas();
         			    		}
-        			    		catch (Exception e) {
-        			    			Log.e(TAG,"Failed to lock canvas",e);
+        			    		catch (IllegalArgumentException e) {
+        			    			//Log.e(TAG,"Failed to lock canvas");
         			    			continue;
         			    		}
         			    		if (canvas != null) {
@@ -495,18 +454,14 @@ public class MainService extends Service {
         			    			paint.setStyle(Paint.Style.FILL); 
         			    			canvas.drawPaint(paint); 
         			    			// Draw the text
-        			    			/*paint.setColor(Color.WHITE); 
+        			    			paint.setColor(Color.WHITE); 
         			    			paint.setTextAlign(Paint.Align.CENTER);
         			    			paint.setTextSize(30);
         			    			int textX = (int)(mWidth*0.85); // Use the right 30% of the screen
         			    			int textY = (int)(mHeight/3.); // A third of the height of the screen
-        			    			String sensor = mSensor;
-        			    			if (sensor.equals("temperature")) {
-        			    				sensor = "Temperature";
-        			    			}
-        			    			canvas.drawText(sensor, textX, textY, paint);
+        			    			canvas.drawText("Beating Rate", textX, textY, paint);
         			    			paint.setTextSize(30);
-        			    			canvas.drawText(String.format("%.5g", sensorValue), textX, 2*textY, paint);*/
+        			    			canvas.drawText(String.format("%.5g", myBR.mean()), textX, 2*textY, paint);
         			    			if (mGraph != null) {
         			    				Rect dest = canvas.getClipBounds();
         			    				dest.inset((int)(mWidth*0.15), 0);
@@ -520,13 +475,17 @@ public class MainService extends Service {
         			    		}
         					}
         				}
-        				mMediaPlayer.stop();
+        				if (mMediaPlayer.isPlaying()) {
+        					mMediaPlayer.stop();
+        				}
         				mMediaPlayer.reset();
         				mMediaPlayer.release();
         			}
         			catch (IOException e) {
-        				Log.e(VIDEO_CARD_TAG,"Failed to read microscope video file",e);
-        				mMediaPlayer.stop();
+        				//Log.e(VIDEO_CARD_TAG,"Failed to read microscope video file",e);
+        				if (mMediaPlayer.isPlaying()) {
+        					mMediaPlayer.stop();
+        				}
         				mMediaPlayer.reset();
         				mMediaPlayer.release();
         			}
@@ -594,7 +553,6 @@ public class MainService extends Service {
     	       	        linechart.setAreaFill(Fills.newSolidFill(WHITE));
     	                linechart.addYAxisLabels(AxisLabelsFactory.newNumericRangeAxisLabels(0.0, 20.0));
     	       	        
-    	                
     	       			try {
     	   					URL chartURL = new URL(linechart.toURLString());
     	   					mGraph = getImage(chartURL);
