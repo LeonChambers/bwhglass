@@ -26,6 +26,7 @@ import android.app.PendingIntent;
 import android.content.Intent;
 import android.graphics.*;
 import android.graphics.Color;
+import android.graphics.PorterDuff.Mode;
 import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
 import android.os.*;
@@ -383,6 +384,9 @@ public class MainService extends Service {
     		public void onStateChange() {
     			if (mVideoCardState == VideoCardState.VIDEO) {
     				Log.i(VIDEO_CARD_TAG,"Switching to Video mode");
+    				Canvas canvas = mSurfaceHolder.lockCanvas();
+    				canvas.drawColor(0, Mode.CLEAR);
+    				mSurfaceHolder.unlockCanvasAndPost(canvas);
     				mMediaPlayer.setDisplay(mSurfaceHolder);
     				mUpdateGraphRunnable.setStop(true);
     			}

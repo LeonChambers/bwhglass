@@ -13,6 +13,7 @@ import android.view.MenuItem;
 
 import java.lang.Runnable;
 
+@SuppressWarnings("unused")
 public class VideoMenuActivity extends Activity {
 
     private final Handler mHandler = new Handler();
